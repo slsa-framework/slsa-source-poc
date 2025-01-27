@@ -9,7 +9,7 @@ require (
 	github.com/sigstore/sigstore-go v0.6.3-0.20250123153628-85b2bcba8898
 	github.com/spf13/cobra v1.8.1
 	github.com/theupdateframework/go-tuf/v2 v2.0.2
-	google.golang.org/protobuf v1.36.3
+	google.golang.org/protobuf v1.36.4
 )
 
 require (
