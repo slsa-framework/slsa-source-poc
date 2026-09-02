@@ -80,18 +80,57 @@ func TestVerifyEnvelope(t *testing.T) {
 		},
 		{
 			name:    "wrong-issuer",
-			env:     &fakeEnvelope{verification: signedBy("https://accounts.google.com", ExpectedSan)},
+			env:     &fakeEnvelope{verification: signedBy("https://accounts.google.com", ExpectedSanPrefix+"refs/heads/main")},
 			mustErr: true,
 		},
 		{
-			name: "expected-identity",
-			env:  &fakeEnvelope{verification: signedBy(ExpectedIssuer, ExpectedSan)},
+			// The workflow identity ends with whatever reference the
+			// user pinned it to: a digest, a tag or a branch.
+			name: "workflow-pinned-to-digest",
+			env:  &fakeEnvelope{verification: signedBy(ExpectedIssuer, ExpectedSanPrefix+"dea965cdca5e0cb422bf7b2653c9d15f678ad01c")},
+		},
+		{
+			name: "workflow-pinned-to-tag",
+			env:  &fakeEnvelope{verification: signedBy(ExpectedIssuer, ExpectedSanPrefix+"refs/tags/v0.1.0")},
+		},
+		{
+			name: "workflow-pinned-to-branch",
+			env:  &fakeEnvelope{verification: signedBy(ExpectedIssuer, ExpectedSanPrefix+"refs/heads/main")},
+		},
+		{
+			// A lookalike repository or workflow must not match the prefix
+			name:    "lookalike-repository",
+			env:     &fakeEnvelope{verification: signedBy(ExpectedIssuer, "https://github.com/slsa-framework/actions-fork/.github/workflows/compute_slsa_source.yml@refs/heads/main")},
+			mustErr: true,
+		},
+		{
+			name:    "lookalike-workflow",
+			env:     &fakeEnvelope{verification: signedBy(ExpectedIssuer, "https://github.com/slsa-framework/actions/.github/workflows/compute_slsa_source.yml.evil@refs/heads/main")},
+			mustErr: true,
+		},
+		{
+			name:    "other-workflow-in-actions-repo",
+			env:     &fakeEnvelope{verification: signedBy(ExpectedIssuer, "https://github.com/slsa-framework/actions/.github/workflows/release.yaml@refs/heads/main")},
+			mustErr: true,
+		},
+		{
+			// Attestations signed while the actions lived in the
+			// source-actions repository are still accepted.
+			name: "legacy-source-actions-identity",
+			env:  &fakeEnvelope{verification: signedBy(ExpectedIssuer, LegacySourceActionsSan)},
 		},
 		{
 			// Attestations signed before the repository split are
 			// still accepted (issue #255).
-			name: "old-identity",
-			env:  &fakeEnvelope{verification: signedBy(ExpectedIssuer, OldExpectedSan)},
+			name: "legacy-poc-identity",
+			env:  &fakeEnvelope{verification: signedBy(ExpectedIssuer, LegacyPocSan)},
+		},
+		{
+			// The legacy identities are matched exactly, other refs
+			// of the legacy workflows are not accepted.
+			name:    "legacy-workflow-other-ref",
+			env:     &fakeEnvelope{verification: signedBy(ExpectedIssuer, "https://github.com/slsa-framework/source-actions/.github/workflows/compute_slsa_source.yml@refs/heads/feature")},
+			mustErr: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,9 +159,53 @@ func TestVerifyEnvelopeCustomIdentity(t *testing.T) {
 
 	// ... and without alternates, the default identities don't
 	require.Error(t, custom.VerifyEnvelope(&fakeEnvelope{
-		verification: signedBy(ExpectedIssuer, ExpectedSan),
+		verification: signedBy(ExpectedIssuer, ExpectedSanPrefix+"refs/heads/main"),
 	}))
 	require.Error(t, custom.VerifyEnvelope(&fakeEnvelope{
-		verification: signedBy(ExpectedIssuer, OldExpectedSan),
+		verification: signedBy(ExpectedIssuer, LegacySourceActionsSan),
 	}))
+	require.Error(t, custom.VerifyEnvelope(&fakeEnvelope{
+		verification: signedBy(ExpectedIssuer, LegacyPocSan),
+	}))
+}
+
+func TestVerifyEnvelopeRequiresIssuer(t *testing.T) {
+	t.Parallel()
+	// Without an issuer, no identity is accepted (fail closed)
+	for _, opts := range []VerificationOptions{
+		{ExpectedSan: LegacySourceActionsSan},
+		{ExpectedSanPrefix: ExpectedSanPrefix},
+		{AlternateSans: []string{LegacyPocSan}},
+	} {
+		verifier := NewBndVerifier(opts)
+		require.Empty(t, opts.expectedIdentities())
+		require.Error(t, verifier.VerifyEnvelope(&fakeEnvelope{
+			verification: signedBy(ExpectedIssuer, LegacySourceActionsSan),
+		}))
+		require.Error(t, verifier.VerifyEnvelope(&fakeEnvelope{
+			verification: signedBy(ExpectedIssuer, ExpectedSanPrefix+"refs/heads/main"),
+		}))
+	}
+}
+
+func TestVerificationOptionsExpectedIdentities(t *testing.T) {
+	t.Parallel()
+	// The exact SAN takes precedence over the prefix, alternates are added
+	ids := (&VerificationOptions{
+		ExpectedIssuer:    ExpectedIssuer,
+		ExpectedSan:       "https://github.com/example/repo/.github/workflows/sign.yml@refs/heads/main",
+		ExpectedSanPrefix: ExpectedSanPrefix,
+		AlternateSans:     []string{"", LegacyPocSan},
+	}).expectedIdentities()
+	require.Len(t, ids, 2)
+	require.Equal(t, "https://github.com/example/repo/.github/workflows/sign.yml@refs/heads/main", ids[0].GetSigstore().GetIdentity())
+	require.Nil(t, ids[0].GetSigstore().GetIdentityMatch())
+	require.Equal(t, LegacyPocSan, ids[1].GetSigstore().GetIdentity())
+
+	// The defaults use the prefix plus the legacy identities
+	ids = DefaultVerifierOptions.expectedIdentities()
+	require.Len(t, ids, 3)
+	require.Empty(t, ids[0].GetSigstore().GetIdentity())
+	require.Equal(t, ExpectedSanPrefix, ids[0].GetSigstore().GetIdentityMatch().GetPrefix())
+	require.Equal(t, ExpectedIssuer, ids[0].GetSigstore().GetIssuer())
 }

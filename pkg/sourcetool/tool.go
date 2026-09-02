@@ -61,8 +61,9 @@ func New(funcs ...ConfigFn) (*Tool, error) {
 	}
 	if t.Options.ExpectedSan != "" {
 		// When pinning a custom identity, don't accept the default
-		// migration alternates.
+		// workflow identity prefix or the migration alternates.
 		verifierOptions.ExpectedSan = t.Options.ExpectedSan
+		verifierOptions.ExpectedSanPrefix = ""
 		verifierOptions.AlternateSans = nil
 	}
 
