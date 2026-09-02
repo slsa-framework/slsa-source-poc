@@ -86,6 +86,59 @@ func TestLatestReleaseTag(t *testing.T) {
 	}
 }
 
+func TestSearchPullRequestsByTitle(t *testing.T) {
+	t.Parallel()
+	openPRs := []*github.PullRequest{
+		{Number: github.Ptr(1), Title: github.Ptr("Bump something")},
+		{Number: github.Ptr(2), Title: github.Ptr(workflowUpdateCommitMessage)},
+		{Number: github.Ptr(3), Title: github.Ptr(workflowCommitMessage)},
+	}
+	for _, tc := range []struct {
+		name         string
+		prs          []*github.PullRequest
+		queries      []string
+		expectNumber int
+	}{
+		{"no-prs", []*github.PullRequest{}, []string{workflowCommitMessage}, 0},
+		{"no-match", openPRs, []string{"Something else"}, 0},
+		{"add-pr", openPRs, []string{workflowCommitMessage}, 3},
+		{"update-pr", openPRs, []string{workflowUpdateCommitMessage}, 2},
+		{"any-of", openPRs, []string{workflowCommitMessage, workflowUpdateCommitMessage}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client, err := github.NewClient(github.WithHTTPClient(mock.NewMockedHTTPClient(
+				mock.WithRequestMatch(mock.GetReposPullsByOwnerByRepo, tc.prs),
+			)))
+			require.NoError(t, err)
+
+			pr, err := searchPullRequestsByTitle(t.Context(), client, "owner", "repo", tc.queries...)
+			require.NoError(t, err)
+			if tc.expectNumber == 0 {
+				assert.Nil(t, pr)
+				return
+			}
+			require.NotNil(t, pr)
+			assert.Equal(t, tc.expectNumber, pr.GetNumber())
+		})
+	}
+
+	t.Run("api-error", func(t *testing.T) {
+		t.Parallel()
+		client, err := github.NewClient(github.WithHTTPClient(mock.NewMockedHTTPClient(
+			mock.WithRequestMatchHandler(
+				mock.GetReposPullsByOwnerByRepo,
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					mock.WriteError(w, http.StatusInternalServerError, "boom")
+				}),
+			),
+		)))
+		require.NoError(t, err)
+		_, err = searchPullRequestsByTitle(t.Context(), client, "owner", "repo", workflowCommitMessage)
+		require.Error(t, err)
+	})
+}
+
 func TestLatestActionsTag(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

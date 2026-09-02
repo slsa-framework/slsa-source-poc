@@ -16,6 +16,7 @@ import (
 	"github.com/slsa-framework/source-tool/pkg/policy"
 	"github.com/slsa-framework/source-tool/pkg/slsa"
 	"github.com/slsa-framework/source-tool/pkg/sourcetool"
+	"github.com/slsa-framework/source-tool/pkg/sourcetool/models"
 )
 
 var (
@@ -137,6 +138,12 @@ sourcetool status myorg/myrepo@mybranch
 				return nil
 			}
 
+			// Look for provenance workflows that need to be updated
+			workflows, err := srctool.FindProvenanceWorkflows(cmd.Context(), opts.GetBranch())
+			if err != nil {
+				return fmt.Errorf("checking provenance workflows: %w", err)
+			}
+
 			title := fmt.Sprintf(
 				"\nSLSA Source Status for %s/%s@%s", opts.owner, opts.repository,
 				ghcontrol.BranchToFullRef(opts.branch),
@@ -197,8 +204,11 @@ sourcetool status myorg/myrepo@mybranch
 
 			fmt.Println(w("Current SLSA Source level: " + verifiedLevel))
 			printLevelGap(toplevel, verifiedLevel, evalResult.Shortfall)
+			printLegacyWorkflows(workflows)
 			fmt.Println("")
-			titled := false
+
+			// Collect the recommended actions from the controls
+			actions := []*slsa.ControlRecommendedAction{}
 			for _, status := range controls.Controls {
 				if status.RecommendedAction == nil {
 					continue
@@ -208,28 +218,25 @@ sourcetool status myorg/myrepo@mybranch
 				if status.Name == slsa.PolicyAvailable && !slsa.IsLevelHigherOrEqualTo(toplevel, slsa.SlsaSourceLevel3) {
 					continue
 				}
-
-				if !titled {
-					fmt.Println(w2("✨ Recommended actions:"))
-					titled = true
-				}
-
-				fmt.Printf(" - %s\n", status.RecommendedAction.Message)
-				if status.RecommendedAction.Command != "" {
-					fmt.Printf("   > %s\n", status.RecommendedAction.Command)
-				}
-				fmt.Println()
+				actions = append(actions, status.RecommendedAction)
 			}
 
+			// ... from the provenance workflows
+			for _, wf := range workflows {
+				if wf.RecommendedAction != nil {
+					actions = append(actions, wf.RecommendedAction)
+				}
+			}
+
+			// ... and from the policy
 			if policyNeedsUpdate {
-				if !titled {
-					fmt.Println(w2("✨ Recommended actions:"))
-				}
-				fmt.Println(" - Update the repository source policy")
-				fmt.Printf("   > sourcetool policy create --update %s\n", opts.GetRepository().Path)
-				fmt.Println()
+				actions = append(actions, &slsa.ControlRecommendedAction{
+					Message: "Update the repository source policy",
+					Command: "sourcetool policy create --update " + opts.GetRepository().Path,
+				})
 			}
 
+			printRecommendedActions(actions)
 			return nil
 		},
 	}
@@ -246,6 +253,35 @@ func firstSourceLevel(levels slsa.SourceVerifiedLevels) string {
 		}
 	}
 	return string(slsa.SlsaSourceLevel0)
+}
+
+// printRecommendedActions prints the list of recommended actions, if any
+func printRecommendedActions(actions []*slsa.ControlRecommendedAction) {
+	if len(actions) == 0 {
+		return
+	}
+	fmt.Println(w2("✨ Recommended actions:"))
+	for _, action := range actions {
+		fmt.Printf(" - %s\n", action.Message)
+		if action.Command != "" {
+			fmt.Printf("   > %s\n", action.Command)
+		}
+		fmt.Println()
+	}
+}
+
+// printLegacyWorkflows warns about provenance workflows still calling the
+// SLSA actions from a deprecated repository.
+func printLegacyWorkflows(workflows []*models.ProvenanceWorkflow) {
+	for _, wf := range workflows {
+		if !wf.IsLegacy() {
+			continue
+		}
+		fmt.Printf(
+			"%s The workflow %s calls the SLSA actions from the deprecated %s repository.\n",
+			w2("⚠️ "), wf.Path, strings.Join(wf.LegacyActionsRepos, " and "),
+		)
+	}
 }
 
 // printLevelGap explains when the policy-verified level is below the level the

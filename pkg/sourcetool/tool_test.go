@@ -15,6 +15,39 @@ import (
 	"github.com/slsa-framework/source-tool/pkg/sourcetool/sourcetoolfakes"
 )
 
+func TestFindProvenanceWorkflows(t *testing.T) {
+	t.Parallel()
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		backend := &modelsfakes.FakeVcsBackend{}
+		backend.FindProvenanceWorkflowsReturns([]*models.ProvenanceWorkflow{
+			{Path: ".github/workflows/slsa.yml", LegacyActionsRepos: []string{"slsa-framework/source-actions"}},
+		}, nil)
+		tool := &Tool{backend: backend}
+		res, err := tool.FindProvenanceWorkflows(t.Context(), &models.Branch{Name: "main", Repository: &models.Repository{}})
+		require.NoError(t, err)
+		require.Len(t, res, 1)
+		require.True(t, res[0].IsLegacy())
+		require.Equal(t, 1, backend.FindProvenanceWorkflowsCallCount())
+	})
+	t.Run("no-repository", func(t *testing.T) {
+		t.Parallel()
+		backend := &modelsfakes.FakeVcsBackend{}
+		tool := &Tool{backend: backend}
+		_, err := tool.FindProvenanceWorkflows(t.Context(), &models.Branch{Name: "main"})
+		require.Error(t, err)
+		require.Equal(t, 0, backend.FindProvenanceWorkflowsCallCount())
+	})
+	t.Run("backend-fails", func(t *testing.T) {
+		t.Parallel()
+		backend := &modelsfakes.FakeVcsBackend{}
+		backend.FindProvenanceWorkflowsReturns(nil, errors.New("failed badly"))
+		tool := &Tool{backend: backend}
+		_, err := tool.FindProvenanceWorkflows(t.Context(), &models.Branch{Name: "main", Repository: &models.Repository{}})
+		require.Error(t, err)
+	})
+}
+
 func TestGetBranchControls(t *testing.T) {
 	t.Parallel()
 	t.Run("GetActiveControls-success", func(t *testing.T) {

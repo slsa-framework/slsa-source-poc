@@ -61,8 +61,9 @@ func New(funcs ...ConfigFn) (*Tool, error) {
 	}
 	if t.Options.ExpectedSan != "" {
 		// When pinning a custom identity, don't accept the default
-		// migration alternates.
+		// workflow identity prefix or the migration alternates.
 		verifierOptions.ExpectedSan = t.Options.ExpectedSan
+		verifierOptions.ExpectedSanPrefix = ""
 		verifierOptions.AlternateSans = nil
 	}
 
@@ -328,6 +329,16 @@ func (t *Tool) ControlPrecheck(
 	_ context.Context, r *models.Repository, branches []*models.Branch, config models.ControlConfiguration,
 ) (ok bool, remediationMessage string, remediateFn models.ControlPreRemediationFn, err error) {
 	return t.backend.ControlPrecheck(r, branches, config)
+}
+
+// FindProvenanceWorkflows returns the workflows in the branch that call the
+// SLSA source actions to generate provenance. Workflows still calling the
+// actions from a legacy repository are flagged so they can be updated.
+func (t *Tool) FindProvenanceWorkflows(ctx context.Context, branch *models.Branch) ([]*models.ProvenanceWorkflow, error) {
+	if branch == nil || branch.Repository == nil {
+		return nil, errors.New("repository not specified in branch")
+	}
+	return t.backend.FindProvenanceWorkflows(ctx, branch)
 }
 
 // Attester returns an attester object with the tool configuration

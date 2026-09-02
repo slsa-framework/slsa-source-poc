@@ -207,9 +207,9 @@ func (a *Attester) GetRevisionVSA(ctx context.Context, branch *models.Branch, re
 			continue
 		}
 
-		// Check the verifier ID matches
-		if vsaPred.GetVerifier().GetId() != VsaVerifierId {
-			Debugf("VSA verfier ID does not match %s", VsaVerifierId)
+		// Check the verifier ID is one we accept
+		if !IsAcceptedVsaVerifierId(vsaPred.GetVerifier().GetId()) {
+			Debugf("VSA verifier ID %q is not one of %v", vsaPred.GetVerifier().GetId(), AcceptedVsaVerifierIds)
 			continue
 		}
 

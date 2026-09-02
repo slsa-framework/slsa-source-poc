@@ -34,7 +34,7 @@ type Options struct {
 
 	// ExpectedIssuer and ExpectedSan override the identity expected to have
 	// signed the attestations the tool verifies. When empty, the tool
-	// defaults to the SLSA source-actions workflow identity.
+	// defaults to the SLSA actions provenance workflow identity.
 	ExpectedIssuer string
 	ExpectedSan    string
 

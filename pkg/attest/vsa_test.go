@@ -130,3 +130,13 @@ func TestCreateUnsignedSourceVsaSubjectAnnotation(t *testing.T) {
 	require.Len(t, refs, 1)
 	require.Equal(t, branch.FullRef(), refs[0].GetStringValue())
 }
+
+func TestIsAcceptedVsaVerifierId(t *testing.T) {
+	t.Parallel()
+	require.True(t, IsAcceptedVsaVerifierId(VsaVerifierId))
+	require.True(t, IsAcceptedVsaVerifierId(LegacySourceActionsVsaVerifierId))
+	require.True(t, IsAcceptedVsaVerifierId(LegacyPocVsaVerifierId))
+	require.False(t, IsAcceptedVsaVerifierId(""))
+	require.False(t, IsAcceptedVsaVerifierId("https://github.com/attacker/actions"))
+	require.False(t, IsAcceptedVsaVerifierId(VsaVerifierId+"/"))
+}

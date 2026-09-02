@@ -49,6 +49,7 @@ type VcsBackend interface {
 	GetPreviousCommit(context.Context, *Branch, *Commit) (*Commit, error)
 	GetDefaultBranch(context.Context, *Repository) (*Branch, error)
 	GetRevisionCommit(context.Context, *Repository, Revision) (*Commit, error)
+	FindProvenanceWorkflows(context.Context, *Branch) ([]*ProvenanceWorkflow, error)
 }
 
 type BackendOptions struct {
@@ -199,6 +200,27 @@ type PullRequest struct {
 	Base   string // main
 	Number int
 	Repo   *Repository
+}
+
+// ProvenanceWorkflow describes a CI workflow found in a repository that calls
+// the SLSA source actions to generate provenance.
+type ProvenanceWorkflow struct {
+	// Path of the workflow file, relative to the repository root
+	Path string
+
+	// LegacyActionsRepos lists the deprecated repositories the workflow still
+	// calls the SLSA actions from. When empty, the workflow is up to date.
+	LegacyActionsRepos []string
+
+	// RecommendedAction describes how to bring the workflow up to date. It
+	// is nil when the workflow does not need any changes.
+	RecommendedAction *slsa.ControlRecommendedAction
+}
+
+// IsLegacy returns true when the workflow calls the SLSA actions from a
+// deprecated repository.
+func (pw *ProvenanceWorkflow) IsLegacy() bool {
+	return len(pw.LegacyActionsRepos) > 0
 }
 
 // Actor abstracts a user. For now it is intended to model both entities
