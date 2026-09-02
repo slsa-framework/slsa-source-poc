@@ -330,6 +330,16 @@ func (t *Tool) ControlPrecheck(
 	return t.backend.ControlPrecheck(r, branches, config)
 }
 
+// FindProvenanceWorkflows returns the workflows in the branch that call the
+// SLSA source actions to generate provenance. Workflows still calling the
+// actions from a legacy repository are flagged so they can be updated.
+func (t *Tool) FindProvenanceWorkflows(ctx context.Context, branch *models.Branch) ([]*models.ProvenanceWorkflow, error) {
+	if branch == nil || branch.Repository == nil {
+		return nil, errors.New("repository not specified in branch")
+	}
+	return t.backend.FindProvenanceWorkflows(ctx, branch)
+}
+
 // Attester returns an attester object with the tool configuration
 func (t *Tool) Attester() *attest.Attester {
 	return t.attester

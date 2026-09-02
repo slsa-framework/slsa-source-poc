@@ -54,6 +54,20 @@ type FakeVcsBackend struct {
 		result3 models.ControlPreRemediationFn
 		result4 error
 	}
+	FindProvenanceWorkflowsStub        func(context.Context, *models.Branch) ([]*models.ProvenanceWorkflow, error)
+	findProvenanceWorkflowsMutex       sync.RWMutex
+	findProvenanceWorkflowsArgsForCall []struct {
+		arg1 context.Context
+		arg2 *models.Branch
+	}
+	findProvenanceWorkflowsReturns struct {
+		result1 []*models.ProvenanceWorkflow
+		result2 error
+	}
+	findProvenanceWorkflowsReturnsOnCall map[int]struct {
+		result1 []*models.ProvenanceWorkflow
+		result2 error
+	}
 	GetBranchControlsStub        func(context.Context, *models.Branch) (*slsa.ControlSet, error)
 	getBranchControlsMutex       sync.RWMutex
 	getBranchControlsArgsForCall []struct {
@@ -371,6 +385,71 @@ func (fake *FakeVcsBackend) ControlPrecheckReturnsOnCall(i int, result1 bool, re
 		result3 models.ControlPreRemediationFn
 		result4 error
 	}{result1, result2, result3, result4}
+}
+
+func (fake *FakeVcsBackend) FindProvenanceWorkflows(arg1 context.Context, arg2 *models.Branch) ([]*models.ProvenanceWorkflow, error) {
+	fake.findProvenanceWorkflowsMutex.Lock()
+	ret, specificReturn := fake.findProvenanceWorkflowsReturnsOnCall[len(fake.findProvenanceWorkflowsArgsForCall)]
+	fake.findProvenanceWorkflowsArgsForCall = append(fake.findProvenanceWorkflowsArgsForCall, struct {
+		arg1 context.Context
+		arg2 *models.Branch
+	}{arg1, arg2})
+	stub := fake.FindProvenanceWorkflowsStub
+	fakeReturns := fake.findProvenanceWorkflowsReturns
+	fake.recordInvocation("FindProvenanceWorkflows", []interface{}{arg1, arg2})
+	fake.findProvenanceWorkflowsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeVcsBackend) FindProvenanceWorkflowsCallCount() int {
+	fake.findProvenanceWorkflowsMutex.RLock()
+	defer fake.findProvenanceWorkflowsMutex.RUnlock()
+	return len(fake.findProvenanceWorkflowsArgsForCall)
+}
+
+func (fake *FakeVcsBackend) FindProvenanceWorkflowsCalls(stub func(context.Context, *models.Branch) ([]*models.ProvenanceWorkflow, error)) {
+	fake.findProvenanceWorkflowsMutex.Lock()
+	defer fake.findProvenanceWorkflowsMutex.Unlock()
+	fake.FindProvenanceWorkflowsStub = stub
+}
+
+func (fake *FakeVcsBackend) FindProvenanceWorkflowsArgsForCall(i int) (context.Context, *models.Branch) {
+	fake.findProvenanceWorkflowsMutex.RLock()
+	defer fake.findProvenanceWorkflowsMutex.RUnlock()
+	argsForCall := fake.findProvenanceWorkflowsArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeVcsBackend) FindProvenanceWorkflowsReturns(result1 []*models.ProvenanceWorkflow, result2 error) {
+	fake.findProvenanceWorkflowsMutex.Lock()
+	defer fake.findProvenanceWorkflowsMutex.Unlock()
+	fake.FindProvenanceWorkflowsStub = nil
+	fake.findProvenanceWorkflowsReturns = struct {
+		result1 []*models.ProvenanceWorkflow
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeVcsBackend) FindProvenanceWorkflowsReturnsOnCall(i int, result1 []*models.ProvenanceWorkflow, result2 error) {
+	fake.findProvenanceWorkflowsMutex.Lock()
+	defer fake.findProvenanceWorkflowsMutex.Unlock()
+	fake.FindProvenanceWorkflowsStub = nil
+	if fake.findProvenanceWorkflowsReturnsOnCall == nil {
+		fake.findProvenanceWorkflowsReturnsOnCall = make(map[int]struct {
+			result1 []*models.ProvenanceWorkflow
+			result2 error
+		})
+	}
+	fake.findProvenanceWorkflowsReturnsOnCall[i] = struct {
+		result1 []*models.ProvenanceWorkflow
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeVcsBackend) GetBranchControls(arg1 context.Context, arg2 *models.Branch) (*slsa.ControlSet, error) {
