@@ -33,6 +33,20 @@ const (
 	// workflowCommitMessage will be used as the commit message and the PR title
 	workflowCommitMessage = "Add SLSA Source Provenance Workflow"
 
+	// workflowUpdateCommitMessage is the commit message and PR title of the
+	// pull request updating workflows calling the actions from a legacy repo.
+	workflowUpdateCommitMessage = "Update SLSA Source Provenance Workflow"
+
+	// workflowUpdatePRBody is the body of the pull request updating the provenance
+	// workflow. It takes the current actions repo (twice) and the pinned tag.
+	workflowUpdatePRBody = `This pull request updates the SLSA Source provenance workflow to call the ` +
+		`SLSA actions from their new repository at [%s](https://github.com/%s).` + "\n\n" +
+		`The previous locations are deprecated and will no longer receive updates. ` +
+		`The actions are now pinned to the digest of the %s release, recording the ` +
+		`version in a comment so that dependabot can keep it up to date.` + "\n\n" +
+		`Note: This is an automated PR created using the ` +
+		`[SLSA sourcetool](https://github.com/slsa-framework/source-tool) utility.` + "\n"
+
 	// workflowPRBody is the body of the pull request that adds the provenance workflow
 	workflowPRBody = `This pull request adds a new workflow to the repository to generate ` +
 		`[SLSA](https://slsa.dev/) Source provenance data on every push.` + "\n\n" +
@@ -89,23 +103,124 @@ func (b *Backend) checkPushAccess(r *models.Repository) (bool, error) {
 
 // CreateWorkflowPR creates the pull request to add the provenance workflow
 // to the specified repository.
-func (b *Backend) CreateWorkflowPR(r *models.Repository, branches []*models.Branch) (*models.PullRequest, error) {
+func (b *Backend) CreateWorkflowPR(ctx context.Context, r *models.Repository, branches []*models.Branch) (*models.PullRequest, error) {
 	if len(branches) == 0 {
 		return nil, errors.New("no branches specified")
 	}
 
-	user, err := b.authenticator.WhoAmI()
-	if err != nil {
-		return nil, err
-	}
-
 	// Get the actions repo tag
-	actionsTag, actionsHash, err := b.GetLatestActionsTag()
+	actionsTag, actionsHash, err := b.GetLatestActionsTag(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting latest actions tag: %w", err)
 	}
 
 	workflowYAML := buildWorkflowYAML(branches, actionsTag, actionsHash)
+
+	//nolint:contextcheck // the pull request manager does not take a context
+	return b.openWorkflowPR(r, workflowCommitMessage, workflowPRBody, []*repo.PullRequestFileEntry{
+		{
+			Path:   workflowPath,
+			Reader: strings.NewReader(workflowYAML),
+		},
+	})
+}
+
+// updateWorkflowPR creates a pull request updating the specified workflows
+// to call the SLSA actions from the current repository, pinned to its latest
+// release. Workflows not calling any actions from a legacy repo are skipped.
+func (b *Backend) updateWorkflowPR(ctx context.Context, r *models.Repository, workflows []*provenanceWorkflow) (*models.PullRequest, error) {
+	// Get the actions repo tag
+	actionsTag, actionsHash, err := b.GetLatestActionsTag(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("getting latest actions tag: %w", err)
+	}
+
+	files := []*repo.PullRequestFileEntry{}
+	for _, wf := range workflows {
+		content, changed := migrateActionsReferences(wf.Content, actionsTag, actionsHash)
+		if changed == 0 {
+			continue
+		}
+		files = append(files, &repo.PullRequestFileEntry{
+			Path:   wf.Path,
+			Reader: strings.NewReader(content),
+		})
+	}
+
+	if len(files) == 0 {
+		return nil, errors.New("none of the workflows call the SLSA actions from a legacy repository")
+	}
+
+	actionsRepo := ActionsOrg + "/" + ActionsRepo
+	body := fmt.Sprintf(workflowUpdatePRBody, actionsRepo, actionsRepo, actionsTag)
+	//nolint:contextcheck // the pull request manager does not take a context
+	return b.openWorkflowPR(r, workflowUpdateCommitMessage, body, files)
+}
+
+// configureProvenanceWorkflow ensures the repository has a workflow generating
+// provenance which calls the current SLSA actions. It opens a pull request
+// adding the workflow when the repository has none, or updating the existing
+// workflows when they call the actions from a legacy repository. It returns
+// a nil pull request when there is nothing to do: either the workflows are up
+// to date or a pull request adding or updating them is already open.
+func (b *Backend) configureProvenanceWorkflow(ctx context.Context, r *models.Repository, branches []*models.Branch) (*models.PullRequest, error) {
+	// Check if there is an open PR already adding or updating the workflow
+	pr, err := b.FindWorkflowPR(ctx, r)
+	if err != nil {
+		return nil, fmt.Errorf("checking for an open workflow pull request: %w", err)
+	}
+	if pr != nil {
+		return nil, nil
+	}
+
+	owner, repoName, err := r.PathAsGitHubOwnerName()
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := b.authenticator.GetGitHubClient()
+	if err != nil {
+		return nil, fmt.Errorf("getting GitHub client: %w", err)
+	}
+
+	// Look for provenance workflows in the default branch, where the pull
+	// request will be opened. Workflows are detected by their contents, not
+	// by their file name.
+	workflows, err := findProvenanceWorkflows(ctx, client, owner, repoName, r.DefaultBranch)
+	if err != nil {
+		return nil, fmt.Errorf("checking for existing provenance workflows: %w", err)
+	}
+
+	// No workflow found, add it
+	if len(workflows) == 0 {
+		return b.CreateWorkflowPR(ctx, r, branches)
+	}
+
+	legacy := []*provenanceWorkflow{}
+	for _, wf := range workflows {
+		if wf.IsLegacy() {
+			legacy = append(legacy, wf)
+		}
+	}
+
+	// Workflows already call the current actions, nothing to do
+	if len(legacy) == 0 {
+		return nil, nil
+	}
+
+	return b.updateWorkflowPR(ctx, r, legacy)
+}
+
+// openWorkflowPR opens a pull request in the repository checking in the
+// specified files. If the user does not have push access to the repository,
+// the pull request is opened from the user's fork.
+func (b *Backend) openWorkflowPR(
+	r *models.Repository, title, body string, files []*repo.PullRequestFileEntry,
+) (*models.PullRequest, error) {
+	user, err := b.authenticator.WhoAmI()
+	if err != nil {
+		return nil, err
+	}
 
 	// We need to determine if the user needs a fork
 	hasPush, err := b.checkPushAccess(r)
@@ -128,19 +243,14 @@ func (b *Backend) CreateWorkflowPR(r *models.Repository, branches []*models.Bran
 	pr, err := prManager.PullRequestFileList(
 		r,
 		&options.PullRequestFileListOptions{
-			Title: workflowCommitMessage,
-			Body:  workflowPRBody,
+			Title: title,
+			Body:  body,
 			CommitOptions: options.CommitOptions{
 				Name:  user.GetLogin(),
 				Email: commitEmailForActor(user),
 			},
 		},
-		[]*repo.PullRequestFileEntry{
-			{
-				Path:   workflowPath,
-				Reader: strings.NewReader(workflowYAML),
-			},
-		},
+		files,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating workflow pull request: %w", err)
@@ -186,18 +296,9 @@ func (b *Backend) CheckWorkflowFork(r *models.Repository) error {
 	return err
 }
 
-// searchPullRequestsByTitlet searches the last pull requests on a repo for one whose
-// title matches the query string
-func (b *Backend) searchPullRequestsByTitle(ctx context.Context, r *models.Repository, query string) (*github.PullRequest, error) {
-	owner, repoName, err := r.PathAsGitHubOwnerName()
-	if err != nil {
-		return nil, err
-	}
-	client, err := b.authenticator.GetGitHubClient()
-	if err != nil {
-		return nil, err
-	}
-
+// searchPullRequestsByTitle searches the last open pull requests of a repo for
+// the first one whose title contains any of the query strings.
+func searchPullRequestsByTitle(ctx context.Context, client *github.Client, owner, repoName string, queries ...string) (*github.PullRequest, error) {
 	prs, _, err := client.PullRequests.List(
 		ctx, owner, repoName, &github.PullRequestListOptions{
 			State: "open",
@@ -213,15 +314,31 @@ func (b *Backend) searchPullRequestsByTitle(ctx context.Context, r *models.Repos
 	}
 
 	for _, pr := range prs {
-		if strings.Contains(pr.GetTitle(), query) {
-			return pr, nil
+		for _, query := range queries {
+			if strings.Contains(pr.GetTitle(), query) {
+				return pr, nil
+			}
 		}
 	}
 	return nil, nil
 }
 
+// FindWorkflowPR looks for an open pull request adding or updating the
+// provenance workflow in the repository. Returns nil if none is found.
 func (b *Backend) FindWorkflowPR(ctx context.Context, r *models.Repository) (*models.PullRequest, error) {
-	pr, err := b.searchPullRequestsByTitle(ctx, r, workflowCommitMessage)
+	owner, repoName, err := r.PathAsGitHubOwnerName()
+	if err != nil {
+		return nil, err
+	}
+
+	client, err := b.authenticator.GetGitHubClient()
+	if err != nil {
+		return nil, fmt.Errorf("getting GitHub client: %w", err)
+	}
+
+	pr, err := searchPullRequestsByTitle(
+		ctx, client, owner, repoName, workflowCommitMessage, workflowUpdateCommitMessage,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("searching for provenance workflow pull request: %w", err)
 	}
@@ -361,18 +478,9 @@ func (b *Backend) ConfigureControls(r *models.Repository, branches []*models.Bra
 				}
 			}
 		case models.CONFIG_GEN_PROVENANCE:
-			pr, err := b.FindWorkflowPR(context.Background(), r)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("checking repository pull request: %w", err))
-			}
-
-			if pr != nil {
-				continue
-			}
-
-			if _, err := b.CreateWorkflowPR(r, branches); err != nil {
+			if _, err := b.configureProvenanceWorkflow(context.Background(), r, branches); err != nil {
 				if !errors.Is(err, models.ErrProtectionAlreadyInPlace) {
-					errs = append(errs, fmt.Errorf("opening SLSA source workflow pull request: %w", err))
+					errs = append(errs, fmt.Errorf("configuring SLSA source workflow: %w", err))
 				}
 			}
 		case models.CONFIG_TAG_RULES:
@@ -392,13 +500,13 @@ func (b *Backend) ConfigureControls(r *models.Repository, branches []*models.Bra
 
 // GetLatestActionsTag queries GitHub and returns the name and commit digest
 // of the latest release tag of the actions repository (ActionsOrg/ActionsRepo).
-func (b *Backend) GetLatestActionsTag() (tag, digest string, err error) {
+func (b *Backend) GetLatestActionsTag(ctx context.Context) (tag, digest string, err error) {
 	client, err := b.authenticator.GetGitHubClient()
 	if err != nil {
 		return "", "", fmt.Errorf("getting GitHub client: %w", err)
 	}
 
-	return latestActionsTag(context.Background(), client)
+	return latestActionsTag(ctx, client)
 }
 
 // latestActionsTag lists all the tags of the actions repository and returns

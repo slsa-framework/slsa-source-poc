@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"path"
 	"regexp"
@@ -22,12 +23,13 @@ import (
 // workflowsDir is the directory where GitHub looks for actions workflows
 const workflowsDir = ".github/workflows"
 
-// legacyActionsRepos lists the repositories that hosted the SLSA source
-// actions before they moved to ActionsOrg/ActionsRepo. Workflows calling
-// actions from these locations need to be updated.
-var legacyActionsRepos = []string{
-	"slsa-framework/source-actions",
-	"slsa-framework/slsa-source-poc",
+// legacyActionsRepos maps the repositories that hosted the SLSA source
+// actions before they moved to ActionsOrg/ActionsRepo to the directory the
+// actions lived in. Workflows calling actions from these locations need to
+// be updated.
+var legacyActionsRepos = map[string]string{
+	"slsa-framework/source-actions":  "",
+	"slsa-framework/slsa-source-poc": "actions/",
 }
 
 // actionsUsesRegexp matches the `uses:` lines of a workflow calling an action
@@ -40,7 +42,7 @@ var actionsUsesRegexp = buildActionsUsesRegexp()
 func buildActionsUsesRegexp() *regexp.Regexp {
 	repos := make([]string, 0, len(legacyActionsRepos)+1)
 	repos = append(repos, regexp.QuoteMeta(ActionsOrg+"/"+ActionsRepo))
-	for _, r := range legacyActionsRepos {
+	for _, r := range slices.Sorted(maps.Keys(legacyActionsRepos)) {
 		repos = append(repos, regexp.QuoteMeta(r))
 	}
 	return regexp.MustCompile(
@@ -64,7 +66,14 @@ type actionsReference struct {
 // IsLegacy returns true when the reference calls the action from a
 // repository that no longer hosts the SLSA actions.
 func (ar *actionsReference) IsLegacy() bool {
-	return slices.Contains(legacyActionsRepos, ar.Repo)
+	_, ok := legacyActionsRepos[ar.Repo]
+	return ok
+}
+
+// CurrentPath returns the path of the referenced action in the current
+// actions repository (ActionsOrg/ActionsRepo).
+func (ar *actionsReference) CurrentPath() string {
+	return strings.TrimPrefix(ar.Path, legacyActionsRepos[ar.Repo])
 }
 
 // findActionsReferences scans the contents of a workflow file and returns all
@@ -84,6 +93,30 @@ func findActionsReferences(content string) []*actionsReference {
 		})
 	}
 	return refs
+}
+
+// migrateActionsReferences rewrites the references to the SLSA actions found
+// in a workflow which still call them from a legacy repository. The rewritten
+// references call the actions from ActionsOrg/ActionsRepo pinned to the digest
+// of the specified tag, recording the tag in a comment so that dependabot can
+// keep the pin updated. Returns the new contents and the number of lines changed.
+func migrateActionsReferences(content, tag, digest string) (migrated string, changed int) {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		m := actionsUsesRegexp.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		ref := &actionsReference{Repo: m[2], Path: m[3], Ref: m[4]}
+		if !ref.IsLegacy() {
+			continue
+		}
+		lines[i] = fmt.Sprintf(
+			"%s%s/%s/%s@%s%s # %s", m[1], ActionsOrg, ActionsRepo, ref.CurrentPath(), digest, m[5], tag,
+		)
+		changed++
+	}
+	return strings.Join(lines, "\n"), changed
 }
 
 // workflowFile is a GitHub actions workflow read from a repository
@@ -140,6 +173,12 @@ type provenanceWorkflow struct {
 	*workflowFile
 	// References are the calls to the SLSA actions found in the workflow
 	References []*actionsReference
+}
+
+// IsLegacy returns true when the workflow calls any of the SLSA actions
+// from a legacy repository.
+func (pw *provenanceWorkflow) IsLegacy() bool {
+	return slices.ContainsFunc(pw.References, func(ref *actionsReference) bool { return ref.IsLegacy() })
 }
 
 // LegacyRepos returns the deduplicated list of legacy repositories the

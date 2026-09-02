@@ -326,7 +326,7 @@ func (b *Backend) ControlConfigurationDescr(branch *models.Branch, config models
 		)
 	case models.CONFIG_GEN_PROVENANCE:
 		return fmt.Sprintf(
-			"Open a pull request on %s to add the provenance generation workflow",
+			"Open a pull request on %s to add or update the provenance generation workflow",
 			repo.Path,
 		)
 	case models.CONFIG_POLICY:

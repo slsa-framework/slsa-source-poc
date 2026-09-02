@@ -294,7 +294,8 @@ this is required to reach SLSA source level 2+.
 
 %s
 Opens a pull request in the repository to add the provenance generation workflow
-after every push. 
+after every push. If the repository already has a workflow calling the SLSA
+actions from a deprecated location, the pull request updates it instead.
 
 %s
 Opens a pull request on the SLSA policy repository to check in a SLSA Source 

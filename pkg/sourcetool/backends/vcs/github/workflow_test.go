@@ -121,6 +121,82 @@ func TestActionsReferenceIsLegacy(t *testing.T) {
 	assert.False(t, (&actionsReference{Repo: "slsa-framework/actions"}).IsLegacy())
 }
 
+func TestActionsReferenceCurrentPath(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		repo, path, expect string
+	}{
+		{"slsa-framework/source-actions", ".github/workflows/compute_slsa_source.yml", ".github/workflows/compute_slsa_source.yml"},
+		{"slsa-framework/source-actions", "slsa_with_provenance", "slsa_with_provenance"},
+		{"slsa-framework/slsa-source-poc", ".github/workflows/compute_slsa_source.yml", ".github/workflows/compute_slsa_source.yml"},
+		{"slsa-framework/slsa-source-poc", "actions/slsa_with_provenance", "slsa_with_provenance"},
+		{"slsa-framework/actions", "store_note", "store_note"},
+	} {
+		assert.Equal(t, tc.expect, (&actionsReference{Repo: tc.repo, Path: tc.path}).CurrentPath(), tc.repo+"/"+tc.path)
+	}
+}
+
+func TestMigrateActionsReferences(t *testing.T) {
+	t.Parallel()
+	const (
+		tag    = "v0.1.0"
+		digest = "dea965cdca5e0cb422bf7b2653c9d15f678ad01c"
+	)
+	for _, tc := range []struct {
+		name          string
+		content       string
+		expect        string
+		expectChanged int
+	}{
+		{"empty", "", "", 0},
+		{"unrelated", unrelatedWorkflow, unrelatedWorkflow, 0},
+		{"already-current", currentWorkflow, currentWorkflow, 0},
+		{
+			"reusable-workflow",
+			legacyWorkflow,
+			strings.Replace(
+				legacyWorkflow,
+				"    uses: slsa-framework/source-actions/.github/workflows/compute_slsa_source.yml@main",
+				"    uses: slsa-framework/actions/.github/workflows/compute_slsa_source.yml@"+digest+" # "+tag,
+				1,
+			),
+			1,
+		},
+		{
+			// The poc repo hosted the actions under actions/, the path is fixed
+			"poc-action-path",
+			"    steps:\n    - name: prov\n      uses: slsa-framework/slsa-source-poc/actions/slsa_with_provenance@main\n      with:\n        version: v0.6.2\n",
+			"    steps:\n    - name: prov\n      uses: slsa-framework/actions/slsa_with_provenance@" + digest + " # " + tag + "\n      with:\n        version: v0.6.2\n",
+			1,
+		},
+		{
+			// Quotes are preserved and old comments replaced
+			"quoted-with-comment",
+			`  uses: "slsa-framework/source-actions/get_note@abc123" # v0.0.1` + "\n",
+			`  uses: "slsa-framework/actions/get_note@` + digest + `" # ` + tag + "\n",
+			1,
+		},
+		{
+			"mixed-references",
+			"    - uses: slsa-framework/source-actions/get_note@main\n    - uses: actions/checkout@v4\n    - uses: slsa-framework/actions/store_note@abc123 # v0.0.9\n    - uses: slsa-framework/slsa-source-poc/actions/store_note@main\n",
+			"    - uses: slsa-framework/actions/get_note@" + digest + " # " + tag + "\n    - uses: actions/checkout@v4\n    - uses: slsa-framework/actions/store_note@abc123 # v0.0.9\n    - uses: slsa-framework/actions/store_note@" + digest + " # " + tag + "\n",
+			2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res, changed := migrateActionsReferences(tc.content, tag, digest)
+			assert.Equal(t, tc.expectChanged, changed)
+			assert.Equal(t, tc.expect, res)
+
+			// Migrated content must not reference any legacy repo anymore
+			for _, ref := range findActionsReferences(res) {
+				assert.False(t, ref.IsLegacy(), "line %d still references %s", ref.Line, ref.Repo)
+			}
+		})
+	}
+}
+
 // contentsHandler returns a mock handler for the repository contents API
 // serving the workflows directory listing and the file contents from files.
 func contentsHandler(t *testing.T, files map[string]string) http.Handler {
