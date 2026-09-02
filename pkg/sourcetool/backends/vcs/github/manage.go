@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/google/go-github/v88/github"
+	"golang.org/x/mod/semver"
 
 	"github.com/slsa-framework/source-tool/pkg/repo"
 	"github.com/slsa-framework/source-tool/pkg/repo/options"
@@ -18,10 +19,11 @@ import (
 )
 
 const (
+	// ActionsOrg and ActionsRepo point to the repository hosting the reusable
+	// provenance workflow the generated workflow calls.
 	ActionsOrg   = "slsa-framework"
-	ActionsRepo  = "source-actions"
+	ActionsRepo  = "actions"
 	workflowPath = ".github/workflows/compute_slsa_source.yaml"
-	// workflowSource = "git+https://github.com/slsa-"
 
 	// githubActionsBotLogin and githubActionsBotEmail are the login and email
 	// GitHub uses for the actions bot. It is not a regular noreply.github.com
@@ -56,6 +58,9 @@ jobs:
     uses: %s/%s/.github/workflows/compute_slsa_source.yml@%s # %s
 
 `
+
+	// actionsTagsPerPage is the page size used when listing the actions repo tags
+	actionsTagsPerPage = 100
 )
 
 // checkPushAccess
@@ -100,15 +105,7 @@ func (b *Backend) CreateWorkflowPR(r *models.Repository, branches []*models.Bran
 		return nil, fmt.Errorf("getting latest actions tag: %w", err)
 	}
 
-	// Populate the branches in the workflow template
-	quotedBranchesList := []string{}
-	for _, b := range branches {
-		quotedBranchesList = append(quotedBranchesList, fmt.Sprintf("%q", b.Name))
-	}
-	workflowYAML := fmt.Sprintf(
-		workflowData, strings.Join(quotedBranchesList, ", "),
-		ActionsOrg, ActionsRepo, actionsHash, actionsTag,
-	)
+	workflowYAML := buildWorkflowYAML(branches, actionsTag, actionsHash)
 
 	// We need to determine if the user needs a fork
 	hasPush, err := b.checkPushAccess(r)
@@ -151,6 +148,21 @@ func (b *Backend) CreateWorkflowPR(r *models.Repository, branches []*models.Bran
 
 	// Success!
 	return pr, nil
+}
+
+// buildWorkflowYAML renders the provenance workflow that will be added to the
+// repository. The reusable workflow is pinned to the commit digest of the
+// actions repository tag, while the tag name is added as a comment so that
+// dependabot can keep the pin updated.
+func buildWorkflowYAML(branches []*models.Branch, actionsTag, actionsDigest string) string {
+	quotedBranchesList := make([]string, 0, len(branches))
+	for _, b := range branches {
+		quotedBranchesList = append(quotedBranchesList, fmt.Sprintf("%q", b.Name))
+	}
+	return fmt.Sprintf(
+		workflowData, strings.Join(quotedBranchesList, ", "),
+		ActionsOrg, ActionsRepo, actionsDigest, actionsTag,
+	)
 }
 
 // commitEmailForActor returns the no-reply email address to use when authoring
@@ -378,33 +390,60 @@ func (b *Backend) ConfigureControls(r *models.Repository, branches []*models.Bra
 	return errors.Join(errs...)
 }
 
-// GetLatestActionsTag queries GitHub and fetches the latest tag and digest
-// of the slsa-framework/source-actions repository.
+// GetLatestActionsTag queries GitHub and returns the name and commit digest
+// of the latest release tag of the actions repository (ActionsOrg/ActionsRepo).
 func (b *Backend) GetLatestActionsTag() (tag, digest string, err error) {
 	client, err := b.authenticator.GetGitHubClient()
 	if err != nil {
 		return "", "", fmt.Errorf("getting GitHub client: %w", err)
 	}
 
-	// List tags from slsa-framework/source-actions
-	tags, _, err := client.Repositories.ListTags(
-		context.Background(), ActionsOrg, ActionsRepo,
-		&github.ListOptions{
-			Page:    1,
-			PerPage: 1,
-		},
-	)
-	if err != nil {
-		return "", "", fmt.Errorf("listing tags: %w", err)
+	return latestActionsTag(context.Background(), client)
+}
+
+// latestActionsTag lists all the tags of the actions repository and returns
+// the name and commit digest of the tag with the highest release version.
+func latestActionsTag(ctx context.Context, client *github.Client) (tag, digest string, err error) {
+	tags := []*github.RepositoryTag{}
+	opts := &github.ListOptions{PerPage: actionsTagsPerPage}
+	for {
+		page, resp, listErr := client.Repositories.ListTags(ctx, ActionsOrg, ActionsRepo, opts)
+		if listErr != nil {
+			return "", "", fmt.Errorf("listing tags of %s/%s: %w", ActionsOrg, ActionsRepo, listErr)
+		}
+		tags = append(tags, page...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
 	}
 
-	if len(tags) == 0 {
-		return "", "", errors.New("no tags found in slsa-framework/source-actions")
+	latest := latestReleaseTag(tags)
+	if latest == nil {
+		return "", "", fmt.Errorf("no release tags found in %s/%s", ActionsOrg, ActionsRepo)
 	}
 
-	latestTag := tags[0]
-	tagName := latestTag.GetName()
-	commitSHA := latestTag.GetCommit().GetSHA()
+	if latest.GetCommit().GetSHA() == "" {
+		return "", "", fmt.Errorf("tag %s of %s/%s has no commit digest", latest.GetName(), ActionsOrg, ActionsRepo)
+	}
 
-	return tagName, commitSHA, nil
+	return latest.GetName(), latest.GetCommit().GetSHA(), nil
+}
+
+// latestReleaseTag returns the tag with the highest release version. Only tags
+// named as full semantic versions (vMAJOR.MINOR.PATCH) are considered, so
+// prereleases, floating tags (eg v1) and tags not following the semver format
+// are ignored. Returns nil when the list has no release tags.
+func latestReleaseTag(tags []*github.RepositoryTag) *github.RepositoryTag {
+	var latest *github.RepositoryTag
+	for _, t := range tags {
+		name := t.GetName()
+		if !semver.IsValid(name) || semver.Canonical(name) != name || semver.Prerelease(name) != "" {
+			continue
+		}
+		if latest == nil || semver.Compare(name, latest.GetName()) > 0 {
+			latest = t
+		}
+	}
+	return latest
 }
